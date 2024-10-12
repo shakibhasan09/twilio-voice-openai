@@ -11,14 +11,12 @@ import (
 	"github.com/joho/godotenv"
 )
 
-const (
-	systemMessage = "You are an AI for Optimizerr.com, an efficient and intuitive AI assistant specializing in business scheduling and calendar management. Your primary goal is to help users optimize their time, coordinate meetings, and manage their professional schedules with ease and precision."
-	voice         = "alloy"
-)
-
 var (
-	openAIAPIKey string
-	upgrader     = websocket.Upgrader{
+	port          string
+	openAIAPIKey  string
+	systemMessage string
+	xmlResponse   string
+	upgrader      = websocket.Upgrader{
 		CheckOrigin: func(r *http.Request) bool {
 			return true
 		},
@@ -44,9 +42,19 @@ func Run() {
 		log.Fatal("Missing OpenAI API key. Please set it in the .env file.")
 	}
 
-	brandName := os.Getenv("BRAND_NAME")
-	if brandName == "" {
-		brandName = "Optimizerr"
+	systemMessage = os.Getenv("SYSTEM_MESSAGE")
+	if systemMessage == "" {
+		log.Fatal("Missing system message. Please set it in the .env file.")
+	}
+
+	port = os.Getenv("PORT")
+	if port == "" {
+		log.Fatal("Missing port. Please set it in the .env file.")
+	}
+
+	xmlResponse = os.Getenv("TWILIO_XML_RESPONSE")
+	if xmlResponse == "" {
+		log.Fatal("Missing Twilio XML response. Please set it in the .env file.")
 	}
 
 	mux := http.NewServeMux()
@@ -54,8 +62,6 @@ func Run() {
 	mux.HandleFunc("/", handleRoot)
 	mux.HandleFunc("/incoming-call", handleIncomingCall)
 	mux.HandleFunc("/media-stream", handleMediaStream)
-
-	port := os.Getenv("PORT")
 
 	log.Printf("Server is listening on port %s\n", port)
 	log.Fatal(http.ListenAndServe(":"+port, mux))
@@ -69,13 +75,13 @@ func handleRoot(w http.ResponseWriter, r *http.Request) {
 func handleIncomingCall(w http.ResponseWriter, r *http.Request) {
 	twimlResponse := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 		<Response>
-			<Say>Thanks for calling, please wait while we connect your call to our AI voice assistant, powered by Optimizerr.com</Say>
+			<Say>%s</Say>
 			<Pause length="1"/>
 			<Say>O.K. you can start talking!</Say>
 			<Connect>
 				<Stream url="wss://%s/media-stream" />
 			</Connect>
-		</Response>`, r.Host)
+		</Response>`, xmlResponse, r.Host)
 
 	w.Header().Set("Content-Type", "text/xml")
 	w.Write([]byte(twimlResponse))
@@ -114,7 +120,7 @@ func handleMediaStream(w http.ResponseWriter, r *http.Request) {
 			"turn_detection":      map[string]string{"type": "server_vad"},
 			"input_audio_format":  "g711_ulaw",
 			"output_audio_format": "g711_ulaw",
-			"voice":               voice,
+			"voice":               "alloy",
 			"instructions":        systemMessage,
 			"modalities":          []string{"text", "audio"},
 			"temperature":         0.8,

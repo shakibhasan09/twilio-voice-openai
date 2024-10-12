@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"fmt"
 	"os"
 
 	"github.com/shakibhasan09/twilio-voice-openai/internal"
@@ -10,12 +9,8 @@ import (
 
 var rootCmd = &cobra.Command{
 	Use:   "twilio-voice-openai",
-	Short: "A brief description of your application",
+	Short: "An AI-powered voice assistant using Twilio and OpenAI",
 	Run: func(cmd *cobra.Command, args []string) {
-		port, _ := cmd.Flags().GetInt("port")
-
-		os.Setenv("PORT", fmt.Sprintf("%d", port))
-
 		internal.Run()
 	},
 }
@@ -27,6 +22,4 @@ func Execute() {
 	}
 }
 
-func init() {
-	rootCmd.Flags().IntP("port", "p", 1313, "Set the port to listen on")
-}
+func init() {}
