@@ -61,4 +61,4 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## Contact
 
-If you have any questions or feedback, please open an issue on this repository or contact the maintainer at your@email.com.
+If you have any questions or feedback, please open an issue on this repository or contact me at shakibhasan.me09@gmail.com
