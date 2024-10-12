@@ -1,0 +1,34 @@
+# Ignore Git directory and files
+.git
+.gitignore
+
+# Ignore all markdown files
+*.md
+
+# Ignore binary files
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Ignore test files
+*_test.go
+
+# Ignore build and temporary directories
+/build
+/tmp
+
+# Ignore log files
+*.log
+
+# Ignore IDE specific files
+.idea
+.vscode
+
+# Ignore OS generated files
+.DS_Store
+Thumbs.db
+
+# Ignore Go workspace file
+go.work
