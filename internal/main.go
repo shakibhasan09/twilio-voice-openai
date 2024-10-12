@@ -33,8 +33,10 @@ var (
 )
 
 func Run() {
-	if err := godotenv.Load(); err != nil {
-		log.Fatal("Error loading .env file")
+	if os.Getenv("GO_ENV") == "development" {
+		if err := godotenv.Load(); err != nil {
+			log.Fatal("Error loading .env file")
+		}
 	}
 
 	openAIAPIKey = os.Getenv("OPENAI_API_KEY")
