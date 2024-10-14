@@ -77,13 +77,10 @@ func handleRoot(w http.ResponseWriter, r *http.Request) {
 func handleIncomingCall(w http.ResponseWriter, r *http.Request) {
 	twimlResponse := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 		<Response>
-			<Say>%s</Say>
-			<Pause length="1"/>
-			<Say>O.K. you can start talking!</Say>
 			<Connect>
 				<Stream url="wss://%s/media-stream" />
 			</Connect>
-		</Response>`, xmlResponse, r.Host)
+		</Response>`, r.Host)
 
 	w.Header().Set("Content-Type", "text/xml")
 	w.Write([]byte(twimlResponse))
