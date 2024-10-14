@@ -178,6 +178,10 @@ func handleOpenAIMessages(openAIWs, twilioWs *websocket.Conn, streamSid *string)
 			}
 		}
 
+		if responseType == "response.function_call_arguments.delta" || responseType == " response.function_call_arguments.done" {
+			log.Printf("Received OpenAI function call arguments: %v\n", response)
+		}
+
 		if responseOutput, ok := response["output"].([]map[string]interface{}); ok {
 			if responseOutput[0]["type"] == "function_call" {
 
@@ -214,7 +218,6 @@ func handleOpenAIMessages(openAIWs, twilioWs *websocket.Conn, streamSid *string)
 					}
 
 				}
-
 			}
 
 		}
