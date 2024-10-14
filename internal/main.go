@@ -169,6 +169,7 @@ func handleOpenAIMessages(openAIWs, twilioWs *websocket.Conn, streamSid *string)
 
 		responseType, _ := response["type"].(string)
 		log.Printf("Received OpenAI message: %s\n", responseType)
+		log.Printf("Response: %v\n", response)
 
 		for _, eventType := range logEventTypes {
 			if responseType == eventType {
