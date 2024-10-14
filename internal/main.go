@@ -174,15 +174,17 @@ func handleOpenAIMessages(openAIWs, twilioWs *websocket.Conn, streamSid *string)
 
 		for _, eventType := range logEventTypes {
 			if responseType == eventType {
-				//log.Printf("Received event: %s %v\n", responseType, response)
 				break
 			}
 		}
 
 		if responseOutput, ok := response["output"].([]map[string]interface{}); ok {
 			if responseOutput[0]["type"] == "function_call" {
+
 				name := responseOutput[0]["name"].(string)
 				arguments := responseOutput[0]["arguments"].(map[string]interface{})
+
+				log.Printf("Received OpenAI function call: %s\n", name)
 
 				if name == "get_weather" {
 					location := arguments["location"].(string)
@@ -215,10 +217,6 @@ func handleOpenAIMessages(openAIWs, twilioWs *websocket.Conn, streamSid *string)
 
 			}
 
-		}
-
-		if responseType == "session.updated" {
-			log.Println("Session updated successfully:", response)
 		}
 
 		if responseType == "response.audio.delta" {
