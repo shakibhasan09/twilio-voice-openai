@@ -127,7 +127,7 @@ func handleMediaStream(w http.ResponseWriter, r *http.Request) {
 			"tools": []map[string]interface{}{
 				{
 					"type":        "function",
-					"name":        "get_weather",
+					"name":        "set_meetin",
 					"description": "Get the weather at a given location",
 					"parameters": map[string]interface{}{
 						"type": "object",
@@ -178,48 +178,9 @@ func handleOpenAIMessages(openAIWs, twilioWs *websocket.Conn, streamSid *string)
 			}
 		}
 
-		if responseType == "response.function_call_arguments.delta" || responseType == " response.function_call_arguments.done" {
-			log.Printf("Received OpenAI function call arguments: %v\n", response)
-		}
-
-		if responseOutput, ok := response["output"].([]map[string]interface{}); ok {
-			if responseOutput[0]["type"] == "function_call" {
-
-				name := responseOutput[0]["name"].(string)
-				arguments := responseOutput[0]["arguments"].(map[string]interface{})
-
-				log.Printf("Received OpenAI function call: %s\n", name)
-
-				if name == "get_weather" {
-					location := arguments["location"].(string)
-					scale := arguments["scale"].(string)
-					weather, err := fetchWeather(location, scale)
-					if err != nil {
-						log.Println("Error fetching weather:", err)
-						continue
-					}
-
-					weatherMessage := fmt.Sprintf("The weather in %s is %s.", location, weather)
-					weatherResponse := map[string]interface{}{
-						"type": "conversation.item.create",
-						"item": map[string]interface{}{
-							"type": "function_call_output",
-							"role": "assistant",
-							"content": map[string]interface{}{
-								"type": "input_text",
-								"text": weatherMessage,
-							},
-						},
-					}
-
-					if err := openAIWs.WriteJSON(weatherResponse); err != nil {
-						log.Println("Error sending weather response to Twilio:", err)
-						continue
-					}
-
-				}
-			}
-
+		if responseType == "error" {
+			log.Printf("OpenAI error: %v\n", response)
+			continue
 		}
 
 		if responseType == "response.audio.delta" {
@@ -234,6 +195,58 @@ func handleOpenAIMessages(openAIWs, twilioWs *websocket.Conn, streamSid *string)
 				if err := twilioWs.WriteJSON(audioDelta); err != nil {
 					log.Println("Error sending audio delta to Twilio:", err)
 				}
+			}
+		}
+
+		if response, ok := response["response"].(map[string]interface{}); ok {
+			output, ok := response["output"].([]interface{})
+			if !ok || len(output) == 0 {
+				continue
+			}
+
+			firstOutput, ok := output[0].(map[string]interface{})
+			if !ok {
+				continue
+			}
+
+			outputType, typeOk := firstOutput["type"].(string)
+			name, nameOk := firstOutput["name"].(string)
+			arguments, argumentsOk := firstOutput["arguments"].(string)
+			call_id, callIdOk := firstOutput["call_id"].(string)
+
+			if !typeOk || !nameOk || !argumentsOk || !callIdOk {
+				continue
+			}
+
+			// Handle get_weather function
+			if outputType == "function_call" && name == "get_weather" {
+				var data map[string]string
+
+				err := json.Unmarshal([]byte(arguments), &data)
+				if err != nil {
+					fmt.Println("Error parsing JSON:", err)
+					return
+				}
+
+				description, err := fetchWeather(data["location"], data["scale"])
+				if err != nil {
+					log.Println("Error fetching weather:", err)
+					return
+				}
+
+				weatherResponse := map[string]interface{}{
+					"type": "conversation.item.create",
+					"item": map[string]interface{}{
+						"call_id": call_id,
+						"type":    "function_call_output",
+						"output":  description,
+					},
+				}
+
+				if err := openAIWs.WriteJSON(weatherResponse); err != nil {
+					log.Println("Error sending weather response to openai:", err)
+				}
+
 			}
 		}
 	}
@@ -275,23 +288,28 @@ func handleTwilioMessages(twilioWs, openAIWs *websocket.Conn, streamSid *string)
 	}
 }
 
-func fetchWeather(location string, scale string) (string, error) {
+func fetchWeather(location, scale string) (string, error) {
 	url := fmt.Sprintf("https://api.openweathermap.org/data/2.5/weather?q=%s&appid=%s&units=%s", location, os.Getenv("OPENWEATHER_API_KEY"), scale)
+
 	resp, err := http.Get(url)
 	if err != nil {
 		return "", err
 	}
 	defer resp.Body.Close()
+
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return "", err
 	}
+
 	var weatherData map[string]interface{}
 	err = json.Unmarshal(body, &weatherData)
 	if err != nil {
 		return "", err
 	}
+
 	weather := weatherData["weather"].([]interface{})[0].(map[string]interface{})
 	description := weather["description"].(string)
+
 	return description, nil
 }
