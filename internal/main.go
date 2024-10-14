@@ -171,46 +171,50 @@ func handleOpenAIMessages(openAIWs, twilioWs *websocket.Conn, streamSid *string)
 
 		responseType, _ := response["type"].(string)
 		log.Printf("Received OpenAI message: %s\n", responseType)
-		log.Printf("Response: %v\n", response)
 
 		for _, eventType := range logEventTypes {
 			if responseType == eventType {
-				log.Printf("Received event: %s %v\n", responseType, response)
+				//log.Printf("Received event: %s %v\n", responseType, response)
 				break
 			}
 		}
 
-		if responseName, ok := response["name"].(string); ok {
-			if responseType == "response.function_call.done" && responseName == "get_weather" {
-				location, _ := response["arguments"].(map[string]interface{})["location"].(string)
-				scale, _ := response["arguments"].(map[string]interface{})["scale"].(string)
+		if responseOutput, ok := response["output"].([]map[string]interface{}); ok {
+			if responseOutput[0]["type"] == "function_call" {
+				name := responseOutput[0]["name"].(string)
+				arguments := responseOutput[0]["arguments"].(map[string]interface{})
 
-				resp, err := fetchWeather(location, scale)
-				if err != nil {
-					log.Println("Error fetching weather:", err)
-				}
+				if name == "get_weather" {
+					location := arguments["location"].(string)
+					scale := arguments["scale"].(string)
+					weather, err := fetchWeather(location, scale)
+					if err != nil {
+						log.Println("Error fetching weather:", err)
+						continue
+					}
 
-				log.Printf("Weather: %s\n", resp)
-
-				functionCallOutput := map[string]interface{}{
-					"type": "function_call_output",
-					"item": map[string]interface{}{
-						"type": "message",
-						"role": "assistant",
-						"content": []map[string]interface{}{
-							{
+					weatherMessage := fmt.Sprintf("The weather in %s is %s.", location, weather)
+					weatherResponse := map[string]interface{}{
+						"type": "conversation.item.create",
+						"item": map[string]interface{}{
+							"type": "function_call_output",
+							"role": "assistant",
+							"content": map[string]interface{}{
 								"type": "input_text",
-								"text": resp,
+								"text": weatherMessage,
 							},
 						},
-					},
+					}
+
+					if err := openAIWs.WriteJSON(weatherResponse); err != nil {
+						log.Println("Error sending weather response to Twilio:", err)
+						continue
+					}
+
 				}
 
-				if err := openAIWs.WriteJSON(functionCallOutput); err != nil {
-					log.Fatalln("Error sending function call output:", err)
-					continue
-				}
 			}
+
 		}
 
 		if responseType == "session.updated" {
