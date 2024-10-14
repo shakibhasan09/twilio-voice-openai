@@ -190,6 +190,8 @@ func handleOpenAIMessages(openAIWs, twilioWs *websocket.Conn, streamSid *string)
 					log.Println("Error fetching weather:", err)
 				}
 
+				log.Printf("Weather: %s\n", resp)
+
 				functionCallOutput := map[string]interface{}{
 					"type": "function_call_output",
 					"item": map[string]interface{}{
