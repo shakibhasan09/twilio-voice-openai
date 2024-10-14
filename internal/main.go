@@ -124,6 +124,26 @@ func handleMediaStream(w http.ResponseWriter, r *http.Request) {
 			"modalities":          []string{"text", "audio"},
 			"temperature":         0.8,
 		},
+		"tools": []map[string]interface{}{
+			{
+				"name":        "get_weather",
+				"description": "Get the weather at a given location",
+				"parameters": map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"location": map[string]interface{}{
+							"type":        "string",
+							"description": "Location to get the weather from",
+						},
+						"scale": map[string]interface{}{
+							"type": "string",
+							"enum": []string{"celsius", "farenheit"},
+						},
+					},
+					"required": []string{"location", "scale"},
+				},
+			},
+		},
 	}
 	if err := openAIWs.WriteJSON(sessionUpdate); err != nil {
 		log.Println("Error sending session update:", err)
