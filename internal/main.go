@@ -125,21 +125,24 @@ func handleMediaStream(w http.ResponseWriter, r *http.Request) {
 			"temperature":         0.8,
 			"tools": []map[string]interface{}{
 				{
-					"name":        "get_weather",
-					"description": "Get the weather at a given location",
-					"parameters": map[string]interface{}{
-						"type": "object",
-						"properties": map[string]interface{}{
-							"location": map[string]interface{}{
-								"type":        "string",
-								"description": "Location to get the weather from",
+					"type": "function",
+					"function": map[string]interface{}{
+						"name":        "get_weather",
+						"description": "Get the weather at a given location",
+						"parameters": map[string]interface{}{
+							"type": "object",
+							"properties": map[string]interface{}{
+								"location": map[string]interface{}{
+									"type":        "string",
+									"description": "Location to get the weather from",
+								},
+								"scale": map[string]interface{}{
+									"type": "string",
+									"enum": []string{"celsius", "farenheit"},
+								},
 							},
-							"scale": map[string]interface{}{
-								"type": "string",
-								"enum": []string{"celsius", "farenheit"},
-							},
+							"required": []string{"location", "scale"},
 						},
-						"required": []string{"location", "scale"},
 					},
 				},
 			},
