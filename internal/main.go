@@ -34,65 +34,6 @@ var (
 	}
 )
 
-var sessionUpdate = map[string]interface{}{
-	"type": "session.update",
-	"session": map[string]interface{}{
-		"turn_detection":      map[string]string{"type": "server_vad"},
-		"input_audio_format":  "g711_ulaw",
-		"output_audio_format": "g711_ulaw",
-		"voice":               "alloy",
-		"instructions":        systemMessage,
-		"modalities":          []string{"text", "audio"},
-		"temperature":         0.8,
-		"tools": []map[string]interface{}{
-			{
-				"type":        "function",
-				"name":        "setup_schedule",
-				"description": "Setup business meeting schedule",
-				"parameters": map[string]interface{}{
-					"type": "object",
-					"properties": map[string]interface{}{
-						"name": map[string]interface{}{
-							"type":        "string",
-							"description": "Please tell me your name",
-						},
-						"email": map[string]interface{}{
-							"format":      "email",
-							"type":        "string",
-							"description": "please provide your email address",
-						},
-						"datetime": map[string]interface{}{
-							"type":        "string",
-							"format":      "date-time",
-							"description": "Please provide the date and time of the meeting",
-						},
-						"description": map[string]interface{}{
-							"type":        "string",
-							"description": "what is the purpose of the meeting?",
-						},
-					},
-					"required": []string{"name", "email", "description"},
-				},
-			},
-		},
-	},
-}
-
-var firstResponseUpdate = map[string]interface{}{
-	"type": "conversation.item.create",
-	"item": map[string]interface{}{
-		"id":   "greeting_01",
-		"type": "message",
-		"role": "assistant",
-		"content": []map[string]interface{}{
-			{
-				"type": "text",
-				"text": xmlResponse,
-			},
-		},
-	},
-}
-
 func Run() {
 	if os.Getenv("GO_ENV") == "development" {
 		if err := godotenv.Load(); err != nil {
@@ -178,11 +119,68 @@ func handleMediaStream(w http.ResponseWriter, r *http.Request) {
 
 	go handleOpenAIMessages(openAIWs, ws, &streamSid, r.PathValue("number"))
 
+	sessionUpdate := map[string]interface{}{
+		"type": "session.update",
+		"session": map[string]interface{}{
+			"turn_detection":      map[string]string{"type": "server_vad"},
+			"input_audio_format":  "g711_ulaw",
+			"output_audio_format": "g711_ulaw",
+			"voice":               "alloy",
+			"instructions":        systemMessage,
+			"modalities":          []string{"text", "audio"},
+			"temperature":         0.8,
+			"tools": []map[string]interface{}{
+				{
+					"type":        "function",
+					"name":        "setup_schedule",
+					"description": "Setup business meeting schedule",
+					"parameters": map[string]interface{}{
+						"type": "object",
+						"properties": map[string]interface{}{
+							"name": map[string]interface{}{
+								"type":        "string",
+								"description": "Please tell me your name",
+							},
+							"email": map[string]interface{}{
+								"format":      "email",
+								"type":        "string",
+								"description": "please provide your email address",
+							},
+							"datetime": map[string]interface{}{
+								"type":        "string",
+								"format":      "date-time",
+								"description": "Please provide the date and time of the meeting",
+							},
+							"description": map[string]interface{}{
+								"type":        "string",
+								"description": "what is the purpose of the meeting?",
+							},
+						},
+						"required": []string{"name", "email", "description"},
+					},
+				},
+			},
+		},
+	}
 	if err := openAIWs.WriteJSON(&sessionUpdate); err != nil {
 		log.Println("Error sending session update:", err)
 		return
 	}
 
+	firstResponseUpdate := map[string]interface{}{
+		"type": "conversation.item.create",
+		"item": map[string]interface{}{
+			"id":   "greeting_01",
+			"type": "message",
+			"role": "assistant",
+			"content": []map[string]interface{}{
+				{
+					"type": "text",
+					"text": xmlResponse,
+				},
+			},
+		},
+	}
 	if err := openAIWs.WriteJSON(&firstResponseUpdate); err != nil {
 		log.Println("Error sending response update:", err)
 		return
