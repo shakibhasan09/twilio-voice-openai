@@ -1,9 +1,9 @@
 package internal
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"os"
@@ -17,6 +17,7 @@ var (
 	openAIAPIKey  string
 	systemMessage string
 	xmlResponse   string
+	webhook_url   string
 	upgrader      = websocket.Upgrader{
 		CheckOrigin: func(r *http.Request) bool {
 			return true
@@ -32,6 +33,66 @@ var (
 		"session.created",
 	}
 )
+
+var sessionUpdate = map[string]interface{}{
+	"type": "session.update",
+	"session": map[string]interface{}{
+		"turn_detection":      map[string]string{"type": "server_vad"},
+		"input_audio_format":  "g711_ulaw",
+		"output_audio_format": "g711_ulaw",
+		"voice":               "alloy",
+		"instructions":        systemMessage,
+		"modalities":          []string{"text", "audio"},
+		"temperature":         0.8,
+		"tools": []map[string]interface{}{
+			{
+				"type":        "function",
+				"name":        "setup_schedule",
+				"description": "Setup business meeting schedule",
+				"parameters": map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"name": map[string]interface{}{
+							"type":        "string",
+							"description": "Please tell me your name",
+						},
+						"email": map[string]interface{}{
+							"format":      "email",
+							"type":        "string",
+							"description": "Please tell me your email address",
+							"pattern":     "^\\S+@\\S+\\.\\S+$",
+						},
+						"datetime": map[string]interface{}{
+							"type":        "string",
+							"format":      "date-time",
+							"description": "Please provide theDate and time of the meeting",
+						},
+						"description": map[string]interface{}{
+							"type":        "string",
+							"description": "what is the purpose of the meeting?",
+						},
+					},
+					"required": []string{"name", "email", "description"},
+				},
+			},
+		},
+	},
+}
+
+var firstResponseUpdate = map[string]interface{}{
+	"type": "conversation.item.create",
+	"item": map[string]interface{}{
+		"id":   "greeting_01",
+		"type": "message",
+		"role": "assistant",
+		"content": []map[string]interface{}{
+			{
+				"type": "text",
+				"text": xmlResponse,
+			},
+		},
+	},
+}
 
 func Run() {
 	if os.Getenv("GO_ENV") == "development" {
@@ -55,16 +116,21 @@ func Run() {
 		log.Fatal("Missing port. Please set it in the .env file.")
 	}
 
-	xmlResponse = os.Getenv("TWILIO_XML_RESPONSE")
+	xmlResponse = os.Getenv("GREETINGS_RESPONSE")
 	if xmlResponse == "" {
 		log.Fatal("Missing Twilio XML response. Please set it in the .env file.")
+	}
+
+	webhook_url = os.Getenv("WEBHOOK_URL")
+	if webhook_url == "" {
+		log.Fatal("Missing Webhook URL. Please set it in the .env file.")
 	}
 
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/", handleRoot)
 	mux.HandleFunc("/incoming-call", handleIncomingCall)
-	mux.HandleFunc("/media-stream", handleMediaStream)
+	mux.HandleFunc("/media-stream/{number}", handleMediaStream)
 
 	log.Printf("Server is listening on port %s\n", port)
 	log.Fatal(http.ListenAndServe(":"+port, mux))
@@ -79,9 +145,9 @@ func handleIncomingCall(w http.ResponseWriter, r *http.Request) {
 	twimlResponse := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 		<Response>
 			<Connect>
-				<Stream url="wss://%s/media-stream" />
+				<Stream url="wss://%s/media-stream/%s" />
 			</Connect>
-		</Response>`, r.Host)
+		</Response>`, r.Host, r.FormValue("From"))
 
 	w.Header().Set("Content-Type", "text/xml")
 	w.Write([]byte(twimlResponse))
@@ -110,52 +176,32 @@ func handleMediaStream(w http.ResponseWriter, r *http.Request) {
 	log.Println("Connected to the OpenAI Realtime API")
 
 	var streamSid string
+	var phoneNumber string
 
-	go handleOpenAIMessages(openAIWs, ws, &streamSid)
+	go handleOpenAIMessages(openAIWs, ws, &streamSid, &phoneNumber)
 
-	// Send session update
-	sessionUpdate := map[string]interface{}{
-		"type": "session.update",
-		"session": map[string]interface{}{
-			"turn_detection":      map[string]string{"type": "server_vad"},
-			"input_audio_format":  "g711_ulaw",
-			"output_audio_format": "g711_ulaw",
-			"voice":               "alloy",
-			"instructions":        systemMessage,
-			"modalities":          []string{"text", "audio"},
-			"temperature":         0.8,
-			"tools": []map[string]interface{}{
-				{
-					"type":        "function",
-					"name":        "set_meetin",
-					"description": "Get the weather at a given location",
-					"parameters": map[string]interface{}{
-						"type": "object",
-						"properties": map[string]interface{}{
-							"location": map[string]interface{}{
-								"type":        "string",
-								"description": "Location to get the weather from",
-							},
-							"scale": map[string]interface{}{
-								"type": "string",
-								"enum": []string{"celsius", "farenheit"},
-							},
-						},
-						"required": []string{"location", "scale"},
-					},
-				},
-			},
-		},
-	}
-	if err := openAIWs.WriteJSON(sessionUpdate); err != nil {
+	if err := openAIWs.WriteJSON(&sessionUpdate); err != nil {
 		log.Println("Error sending session update:", err)
+		return
+	}
+
+	if err := openAIWs.WriteJSON(&firstResponseUpdate); err != nil {
+		log.Println("Error sending response update:", err)
+		return
+	}
+
+	responseCreate := map[string]interface{}{
+		"type": "response.create",
+	}
+	if err := openAIWs.WriteJSON(&responseCreate); err != nil {
+		log.Println("Error sending response create:", err)
 		return
 	}
 
 	handleTwilioMessages(ws, openAIWs, &streamSid)
 }
 
-func handleOpenAIMessages(openAIWs, twilioWs *websocket.Conn, streamSid *string) {
+func handleOpenAIMessages(openAIWs, twilioWs *websocket.Conn, streamSid *string, phoneNumber *string) {
 	for {
 		_, message, err := openAIWs.ReadMessage()
 		if err != nil {
@@ -218,35 +264,40 @@ func handleOpenAIMessages(openAIWs, twilioWs *websocket.Conn, streamSid *string)
 				continue
 			}
 
-			// Handle get_weather function
-			if outputType == "function_call" && name == "get_weather" {
-				var data map[string]string
+			// Handle setup_schedule function
+			if outputType == "function_call" && name == "setup_schedule" {
+				var data map[string]*string
 
 				err := json.Unmarshal([]byte(arguments), &data)
 				if err != nil {
 					fmt.Println("Error parsing JSON:", err)
-					return
+					continue
 				}
 
-				description, err := fetchWeather(data["location"], data["scale"])
-				if err != nil {
+				if err := setupSchedule(data["name"], data["email"], data["datetime"], data["description"], phoneNumber); err != nil {
 					log.Println("Error fetching weather:", err)
-					return
+					continue
 				}
 
-				weatherResponse := map[string]interface{}{
+				webhookResponse := map[string]interface{}{
 					"type": "conversation.item.create",
 					"item": map[string]interface{}{
 						"call_id": call_id,
 						"type":    "function_call_output",
-						"output":  description,
+						"output":  "Your schedule has been set successfully!",
 					},
 				}
-
-				if err := openAIWs.WriteJSON(weatherResponse); err != nil {
+				if err := openAIWs.WriteJSON(webhookResponse); err != nil {
 					log.Println("Error sending weather response to openai:", err)
 				}
 
+				responseCreate := map[string]interface{}{
+					"type": "response.create",
+				}
+				if err := openAIWs.WriteJSON(&responseCreate); err != nil {
+					log.Println("Error sending response create:", err)
+					continue
+				}
 			}
 		}
 	}
@@ -288,28 +339,43 @@ func handleTwilioMessages(twilioWs, openAIWs *websocket.Conn, streamSid *string)
 	}
 }
 
-func fetchWeather(location, scale string) (string, error) {
-	url := fmt.Sprintf("https://api.openweathermap.org/data/2.5/weather?q=%s&appid=%s&units=%s", location, os.Getenv("OPENWEATHER_API_KEY"), scale)
+func setupSchedule(name, email, datetime, description, phoneNumber *string) error {
+	data := struct {
+		Name        *string `json:"name"`
+		Email       *string `json:"email"`
+		DateTime    *string `json:"datetime"`
+		Description *string `json:"description"`
+		PhoneNumber *string `json:"phone_number"`
+	}{
+		Name:        name,
+		Email:       email,
+		DateTime:    datetime,
+		Description: description,
+		PhoneNumber: phoneNumber,
+	}
 
-	resp, err := http.Get(url)
+	jsonData, err := json.Marshal(data)
 	if err != nil {
-		return "", err
+		return fmt.Errorf("error marshaling JSON: %v", err)
+	}
+
+	req, err := http.NewRequest("POST", webhook_url, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return fmt.Errorf("error creating request: %v", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("error sending request: %v", err)
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
 	}
 
-	var weatherData map[string]interface{}
-	err = json.Unmarshal(body, &weatherData)
-	if err != nil {
-		return "", err
-	}
-
-	weather := weatherData["weather"].([]interface{})[0].(map[string]interface{})
-	description := weather["description"].(string)
-
-	return description, nil
+	return nil
 }
