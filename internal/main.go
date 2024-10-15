@@ -7,77 +7,63 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sync"
 
 	"github.com/gorilla/websocket"
 	"github.com/joho/godotenv"
 )
 
 var (
-	port          string
-	openAIAPIKey  string
-	systemMessage string
-	xmlResponse   string
-	webhook_url   string
-	upgrader      = websocket.Upgrader{
-		CheckOrigin: func(r *http.Request) bool {
-			return true
-		},
+	config struct {
+		Port          string
+		OpenAIAPIKey  string
+		SystemMessage string
+		XMLResponse   string
+		WebhookURL    string
 	}
-	logEventTypes = []string{
-		"response.content.done",
-		"rate_limits.updated",
-		"response.done",
-		"input_audio_buffer.committed",
-		"input_audio_buffer.speech_stopped",
-		"input_audio_buffer.speech_started",
-		"session.created",
+	upgrader      = websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+	logEventTypes = map[string]struct{}{
+		"response.content.done":             {},
+		"rate_limits.updated":               {},
+		"response.done":                     {},
+		"input_audio_buffer.committed":      {},
+		"input_audio_buffer.speech_stopped": {},
+		"input_audio_buffer.speech_started": {},
+		"session.created":                   {},
 	}
 )
 
 func Run() {
+	loadConfig()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", handleRoot)
+	mux.HandleFunc("/incoming-call", handleIncomingCall)
+	mux.HandleFunc("/media-stream/{number}", handleMediaStream)
+
+	log.Printf("Server is listening on port %s\n", config.Port)
+	log.Fatal(http.ListenAndServe(":"+config.Port, mux))
+}
+
+func loadConfig() {
 	if os.Getenv("GO_ENV") == "development" {
 		if err := godotenv.Load(); err != nil {
 			log.Fatal("Error loading .env file")
 		}
 	}
 
-	openAIAPIKey = os.Getenv("OPENAI_API_KEY")
-	if openAIAPIKey == "" {
-		log.Fatal("Missing OpenAI API key. Please set it in the .env file.")
+	config.OpenAIAPIKey = os.Getenv("OPENAI_API_KEY")
+	config.SystemMessage = os.Getenv("SYSTEM_MESSAGE")
+	config.Port = os.Getenv("PORT")
+	config.XMLResponse = os.Getenv("GREETINGS_RESPONSE")
+	config.WebhookURL = os.Getenv("WEBHOOK_URL")
+
+	if config.OpenAIAPIKey == "" || config.SystemMessage == "" || config.Port == "" || config.XMLResponse == "" || config.WebhookURL == "" {
+		log.Fatal("Missing required environment variables. Please check your .env file.")
 	}
-
-	systemMessage = os.Getenv("SYSTEM_MESSAGE")
-	if systemMessage == "" {
-		log.Fatal("Missing system message. Please set it in the .env file.")
-	}
-
-	port = os.Getenv("PORT")
-	if port == "" {
-		log.Fatal("Missing port. Please set it in the .env file.")
-	}
-
-	xmlResponse = os.Getenv("GREETINGS_RESPONSE")
-	if xmlResponse == "" {
-		log.Fatal("Missing Twilio XML response. Please set it in the .env file.")
-	}
-
-	webhook_url = os.Getenv("WEBHOOK_URL")
-	if webhook_url == "" {
-		log.Fatal("Missing Webhook URL. Please set it in the .env file.")
-	}
-
-	mux := http.NewServeMux()
-
-	mux.HandleFunc("/", handleRoot)
-	mux.HandleFunc("/incoming-call", handleIncomingCall)
-	mux.HandleFunc("/media-stream/{number}", handleMediaStream)
-
-	log.Printf("Server is listening on port %s\n", port)
-	log.Fatal(http.ListenAndServe(":"+port, mux))
 }
 
 func handleRoot(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"message": "Twilio Media Stream Server is running!"})
 }
 
@@ -101,10 +87,8 @@ func handleMediaStream(w http.ResponseWriter, r *http.Request) {
 	}
 	defer ws.Close()
 
-	log.Println("Client connected")
-
 	openAIWs, _, err := websocket.DefaultDialer.Dial("wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-10-01", http.Header{
-		"Authorization": []string{"Bearer " + openAIAPIKey},
+		"Authorization": []string{"Bearer " + config.OpenAIAPIKey},
 		"OpenAI-Beta":   []string{"realtime=v1"},
 	})
 	if err != nil {
@@ -113,111 +97,87 @@ func handleMediaStream(w http.ResponseWriter, r *http.Request) {
 	}
 	defer openAIWs.Close()
 
-	log.Println("Connected to the OpenAI Realtime API")
-
 	var streamSid string
+	var wg sync.WaitGroup
+	wg.Add(2)
 
-	go handleOpenAIMessages(openAIWs, ws, &streamSid, r.PathValue("number"))
+	go handleOpenAIMessages(openAIWs, ws, &streamSid, r.PathValue("number"), &wg)
+	go handleTwilioMessages(ws, openAIWs, &streamSid, &wg)
 
-	sessionUpdate := map[string]interface{}{
-		"type": "session.update",
-		"session": map[string]interface{}{
-			"turn_detection":      map[string]string{"type": "server_vad"},
-			"input_audio_format":  "g711_ulaw",
-			"output_audio_format": "g711_ulaw",
-			"voice":               "alloy",
-			"instructions":        systemMessage,
-			"modalities":          []string{"text", "audio"},
-			"temperature":         0.8,
-			"tools": []map[string]interface{}{
-				{
-					"type":        "function",
-					"name":        "setup_schedule",
-					"description": "Setup business meeting schedule",
-					"parameters": map[string]interface{}{
-						"type": "object",
-						"properties": map[string]interface{}{
-							"name": map[string]interface{}{
-								"type":        "string",
-								"description": "Please tell me your name",
+	if err := sendInitialMessages(openAIWs); err != nil {
+		log.Println("Error sending initial messages:", err)
+		return
+	}
+
+	wg.Wait()
+}
+
+func sendInitialMessages(openAIWs *websocket.Conn) error {
+	messages := []map[string]interface{}{
+		{
+			"type": "session.update",
+			"session": map[string]interface{}{
+				"turn_detection":      map[string]string{"type": "server_vad"},
+				"input_audio_format":  "g711_ulaw",
+				"output_audio_format": "g711_ulaw",
+				"voice":               "alloy",
+				"instructions":        config.SystemMessage,
+				"modalities":          []string{"text", "audio"},
+				"temperature":         0.8,
+				"tools": []map[string]interface{}{
+					{
+						"type":        "function",
+						"name":        "setup_schedule",
+						"description": "Setup business meeting schedule",
+						"parameters": map[string]interface{}{
+							"type": "object",
+							"properties": map[string]interface{}{
+								"name":        map[string]string{"type": "string", "description": "Please tell me your name"},
+								"email":       map[string]string{"format": "email", "type": "string", "description": "please provide your email address"},
+								"datetime":    map[string]string{"type": "string", "format": "date-time", "description": "Please provide the date and time of the meeting"},
+								"description": map[string]string{"type": "string", "description": "what is the purpose of the meeting?"},
 							},
-							"email": map[string]interface{}{
-								"format":      "email",
-								"type":        "string",
-								"description": "please provide your email address",
-							},
-							"datetime": map[string]interface{}{
-								"type":        "string",
-								"format":      "date-time",
-								"description": "Please provide the date and time of the meeting",
-							},
-							"description": map[string]interface{}{
-								"type":        "string",
-								"description": "what is the purpose of the meeting?",
-							},
+							"required": []string{"name", "email", "description"},
 						},
-						"required": []string{"name", "email", "description"},
 					},
 				},
 			},
 		},
-	}
-	if err := openAIWs.WriteJSON(&sessionUpdate); err != nil {
-		log.Println("Error sending session update:", err)
-		return
-	}
-
-	firstResponseUpdate := map[string]interface{}{
-		"type": "conversation.item.create",
-		"item": map[string]interface{}{
-			"id":   "greeting_01",
-			"type": "message",
-			"role": "assistant",
-			"content": []map[string]interface{}{
-				{
-					"type": "text",
-					"text": xmlResponse,
+		{
+			"type": "conversation.item.create",
+			"item": map[string]interface{}{
+				"id":   "greeting_01",
+				"type": "message",
+				"role": "assistant",
+				"content": []map[string]interface{}{
+					{"type": "text", "text": config.XMLResponse},
 				},
 			},
 		},
-	}
-	if err := openAIWs.WriteJSON(&firstResponseUpdate); err != nil {
-		log.Println("Error sending response update:", err)
-		return
+		{"type": "response.create"},
 	}
 
-	responseCreate := map[string]interface{}{
-		"type": "response.create",
-	}
-	if err := openAIWs.WriteJSON(&responseCreate); err != nil {
-		log.Println("Error sending response create:", err)
-		return
+	for _, msg := range messages {
+		if err := openAIWs.WriteJSON(&msg); err != nil {
+			return fmt.Errorf("error sending message: %v", err)
+		}
 	}
 
-	handleTwilioMessages(ws, openAIWs, &streamSid)
+	return nil
 }
 
-func handleOpenAIMessages(openAIWs, twilioWs *websocket.Conn, streamSid *string, phoneNumber string) {
+func handleOpenAIMessages(openAIWs, twilioWs *websocket.Conn, streamSid *string, phoneNumber string, wg *sync.WaitGroup) {
+	defer wg.Done()
 	for {
-		_, message, err := openAIWs.ReadMessage()
-		if err != nil {
+		var response map[string]interface{}
+		if err := openAIWs.ReadJSON(&response); err != nil {
 			log.Println("Error reading from OpenAI WebSocket:", err)
 			return
 		}
 
-		var response map[string]interface{}
-		if err := json.Unmarshal(message, &response); err != nil {
-			log.Println("Error unmarshaling OpenAI message:", err)
-			continue
-		}
-
 		responseType, _ := response["type"].(string)
-		log.Printf("Received OpenAI message: %s\n", responseType)
-
-		for _, eventType := range logEventTypes {
-			if responseType == eventType {
-				break
-			}
+		if _, ok := logEventTypes[responseType]; ok {
+			log.Printf("Received OpenAI message: %s\n", responseType)
 		}
 
 		if responseType == "error" {
@@ -230,9 +190,7 @@ func handleOpenAIMessages(openAIWs, twilioWs *websocket.Conn, streamSid *string,
 				audioDelta := map[string]interface{}{
 					"event":     "media",
 					"streamSid": *streamSid,
-					"media": map[string]string{
-						"payload": delta,
-					},
+					"media":     map[string]string{"payload": delta},
 				}
 				if err := twilioWs.WriteJSON(audioDelta); err != nil {
 					log.Println("Error sending audio delta to Twilio:", err)
@@ -240,77 +198,66 @@ func handleOpenAIMessages(openAIWs, twilioWs *websocket.Conn, streamSid *string,
 			}
 		}
 
-		if response, ok := response["response"].(map[string]interface{}); ok {
-			output, ok := response["output"].([]interface{})
-			if !ok || len(output) == 0 {
-				continue
-			}
-
-			firstOutput, ok := output[0].(map[string]interface{})
-			if !ok {
-				continue
-			}
-
-			outputType, typeOk := firstOutput["type"].(string)
-			name, nameOk := firstOutput["name"].(string)
-			arguments, argumentsOk := firstOutput["arguments"].(string)
-			call_id, callIdOk := firstOutput["call_id"].(string)
-
-			if !typeOk || !nameOk || !argumentsOk || !callIdOk {
-				continue
-			}
-
-			// Handle setup_schedule function
-			if outputType == "function_call" && name == "setup_schedule" {
-				var data map[string]string
-
-				err := json.Unmarshal([]byte(arguments), &data)
-				if err != nil {
-					fmt.Println("Error parsing JSON:", err)
-					continue
-				}
-
-				if err := setupSchedule(data["name"], data["email"], data["datetime"], data["description"], phoneNumber); err != nil {
-					log.Println("Error fetching weather:", err)
-					continue
-				}
-
-				webhookResponse := map[string]interface{}{
-					"type": "conversation.item.create",
-					"item": map[string]interface{}{
-						"call_id": call_id,
-						"type":    "function_call_output",
-						"output":  "Your schedule has been set successfully!",
-					},
-				}
-				if err := openAIWs.WriteJSON(webhookResponse); err != nil {
-					log.Println("Error sending weather response to openai:", err)
-				}
-
-				responseCreate := map[string]interface{}{
-					"type": "response.create",
-				}
-				if err := openAIWs.WriteJSON(&responseCreate); err != nil {
-					log.Println("Error sending response create:", err)
-					continue
-				}
-			}
+		if resp, ok := response["response"].(map[string]interface{}); ok {
+			handleOpenAIResponse(resp, openAIWs, phoneNumber)
 		}
 	}
 }
 
-func handleTwilioMessages(twilioWs, openAIWs *websocket.Conn, streamSid *string) {
-	for {
-		_, message, err := twilioWs.ReadMessage()
-		if err != nil {
-			log.Println("Error reading from Twilio WebSocket:", err)
+func handleOpenAIResponse(response map[string]interface{}, openAIWs *websocket.Conn, phoneNumber string) {
+	output, ok := response["output"].([]interface{})
+	if !ok || len(output) == 0 {
+		return
+	}
+
+	firstOutput, ok := output[0].(map[string]interface{})
+	if !ok {
+		return
+	}
+
+	outputType, _ := firstOutput["type"].(string)
+	name, _ := firstOutput["name"].(string)
+	arguments, _ := firstOutput["arguments"].(string)
+	callID, _ := firstOutput["call_id"].(string)
+
+	if outputType == "function_call" && name == "setup_schedule" {
+		var data map[string]string
+		if err := json.Unmarshal([]byte(arguments), &data); err != nil {
+			log.Println("Error parsing JSON:", err)
 			return
 		}
 
+		if err := setupSchedule(data["name"], data["email"], data["datetime"], data["description"], phoneNumber); err != nil {
+			log.Println("Error setting up schedule:", err)
+			return
+		}
+
+		webhookResponse := map[string]interface{}{
+			"type": "conversation.item.create",
+			"item": map[string]interface{}{
+				"call_id": callID,
+				"type":    "function_call_output",
+				"output":  "Your schedule has been set successfully!",
+			},
+		}
+		if err := openAIWs.WriteJSON(webhookResponse); err != nil {
+			log.Println("Error sending webhook response to OpenAI:", err)
+		}
+
+		responseCreate := map[string]interface{}{"type": "response.create"}
+		if err := openAIWs.WriteJSON(&responseCreate); err != nil {
+			log.Println("Error sending response create:", err)
+		}
+	}
+}
+
+func handleTwilioMessages(twilioWs, openAIWs *websocket.Conn, streamSid *string, wg *sync.WaitGroup) {
+	defer wg.Done()
+	for {
 		var data map[string]interface{}
-		if err := json.Unmarshal(message, &data); err != nil {
-			log.Println("Error unmarshaling Twilio message:", err)
-			continue
+		if err := twilioWs.ReadJSON(&data); err != nil {
+			log.Println("Error reading from Twilio WebSocket:", err)
+			return
 		}
 
 		event, _ := data["event"].(string)
@@ -343,11 +290,8 @@ func setupSchedule(name, email, datetime, description, phoneNumber string) error
 		Description string `json:"description"`
 		PhoneNumber string `json:"phone_number"`
 	}{
-		Name:        name,
-		Email:       email,
-		DateTime:    datetime,
-		Description: description,
-		PhoneNumber: phoneNumber,
+		Name: name, Email: email, DateTime: datetime,
+		Description: description, PhoneNumber: phoneNumber,
 	}
 
 	jsonData, err := json.Marshal(data)
@@ -355,15 +299,7 @@ func setupSchedule(name, email, datetime, description, phoneNumber string) error
 		return fmt.Errorf("error marshaling JSON: %v", err)
 	}
 
-	req, err := http.NewRequest("POST", webhook_url, bytes.NewBuffer(jsonData))
-	if err != nil {
-		return fmt.Errorf("error creating request: %v", err)
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-
-	client := &http.Client{}
-	resp, err := client.Do(req)
+	resp, err := http.Post(config.WebhookURL, "application/json", bytes.NewBuffer(jsonData))
 	if err != nil {
 		return fmt.Errorf("error sending request: %v", err)
 	}
