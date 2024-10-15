@@ -59,13 +59,12 @@ var sessionUpdate = map[string]interface{}{
 						"email": map[string]interface{}{
 							"format":      "email",
 							"type":        "string",
-							"description": "Please tell me your email address",
-							"pattern":     "^\\S+@\\S+\\.\\S+$",
+							"description": "please provide your email address",
 						},
 						"datetime": map[string]interface{}{
 							"type":        "string",
 							"format":      "date-time",
-							"description": "Please provide theDate and time of the meeting",
+							"description": "Please provide the date and time of the meeting",
 						},
 						"description": map[string]interface{}{
 							"type":        "string",
@@ -176,9 +175,8 @@ func handleMediaStream(w http.ResponseWriter, r *http.Request) {
 	log.Println("Connected to the OpenAI Realtime API")
 
 	var streamSid string
-	var phoneNumber string
 
-	go handleOpenAIMessages(openAIWs, ws, &streamSid, &phoneNumber)
+	go handleOpenAIMessages(openAIWs, ws, &streamSid, r.PathValue("number"))
 
 	if err := openAIWs.WriteJSON(&sessionUpdate); err != nil {
 		log.Println("Error sending session update:", err)
@@ -201,7 +199,7 @@ func handleMediaStream(w http.ResponseWriter, r *http.Request) {
 	handleTwilioMessages(ws, openAIWs, &streamSid)
 }
 
-func handleOpenAIMessages(openAIWs, twilioWs *websocket.Conn, streamSid *string, phoneNumber *string) {
+func handleOpenAIMessages(openAIWs, twilioWs *websocket.Conn, streamSid *string, phoneNumber string) {
 	for {
 		_, message, err := openAIWs.ReadMessage()
 		if err != nil {
@@ -266,7 +264,7 @@ func handleOpenAIMessages(openAIWs, twilioWs *websocket.Conn, streamSid *string,
 
 			// Handle setup_schedule function
 			if outputType == "function_call" && name == "setup_schedule" {
-				var data map[string]*string
+				var data map[string]string
 
 				err := json.Unmarshal([]byte(arguments), &data)
 				if err != nil {
@@ -339,13 +337,13 @@ func handleTwilioMessages(twilioWs, openAIWs *websocket.Conn, streamSid *string)
 	}
 }
 
-func setupSchedule(name, email, datetime, description, phoneNumber *string) error {
+func setupSchedule(name, email, datetime, description, phoneNumber string) error {
 	data := struct {
-		Name        *string `json:"name"`
-		Email       *string `json:"email"`
-		DateTime    *string `json:"datetime"`
-		Description *string `json:"description"`
-		PhoneNumber *string `json:"phone_number"`
+		Name        string `json:"name"`
+		Email       string `json:"email"`
+		DateTime    string `json:"datetime"`
+		Description string `json:"description"`
+		PhoneNumber string `json:"phone_number"`
 	}{
 		Name:        name,
 		Email:       email,
